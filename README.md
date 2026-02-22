@@ -4,26 +4,55 @@ An enterprise Agentic AI system that enables natural language querying of MSSQL 
 
 > **Ask a question in plain English → Agent reasons, discovers schema, generates SQL, executes it, and returns analysis.**
 
-![Architecture](docs/architecture-diagram.png)
-
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────────────────────┐
-│                          End-to-End Flow                                 │
-│                                                                          │
-│  User ─► Streamlit (EC2) ─► AgentCore Runtime ─► Claude Sonnet 4     │
-│                                      │                     │             │
-│                               AgentCore Memory      MCP Gateway          │
-│                                                          │               │
-│                                                   Lambda Proxy           │
-│                                                   (eu-west-1)            │
-│                                                          │               │
-│                                                   Lambda MCP Server      │
-│                                                   (me-south-1)           │
-│                                                          │               │
-│                                                     RDS MSSQL            │
-└──────────────────────────────────────────────────────────────────────────┘
+                            ┌─────────────────────────────────────────────────────────┐
+                            │              AI Region (eu-west-1)                       │
+                            │                                                         │
+  ┌──────────┐   invoke     │  ┌──────────────────┐    prompt    ┌─────────────────┐  │
+  │          │─────────────►│  │  AgentCore        │────────────►│  Claude          │  │
+  │ Streamlit│   (boto3)    │  │  Runtime          │◄────────────│  Sonnet 4        │  │
+  │ Frontend │              │  │  (microVM)        │   response  │  (Bedrock)       │  │
+  │ (EC2)    │◄─────────────│  │                   │             └─────────────────┘  │
+  └──────────┘   JSON       │  │  ┌─────────────┐ │                                   │
+  me-south-1                │  │  │ AgentCore   │ │  tool calls                       │
+                            │  │  │ Memory      │ │─────────┐                         │
+                            │  │  │ (STM + LTM) │ │         ▼                         │
+                            │  │  └─────────────┘ │  ┌──────────────┐                 │
+                            │  └──────────────────┘  │ MCP Gateway  │                 │
+                            │                        │ (IAM + SigV4)│                 │
+                            │                        └──────┬───────┘                 │
+                            │                               │                         │
+                            │                        ┌──────▼───────┐                 │
+                            │                        │ Lambda Proxy │                 │
+                            │                        │ (forwarder)  │                 │
+                            │                        └──────┬───────┘                 │
+                            └───────────────────────────────┼─────────────────────────┘
+                                                            │ cross-region
+                            ┌───────────────────────────────┼─────────────────────────┐
+                            │  Data Region (me-south-1)     │                         │
+                            │                        ┌──────▼───────────┐             │
+                            │                        │ Lambda MCP Server│             │
+                            │                        │ (3 tools)        │             │
+                            │                        └──────┬───────────┘             │
+                            │                               │ VPC private subnet      │
+                            │                        ┌──────▼───────┐                 │
+                            │                        │  RDS MSSQL   │                 │
+                            │                        │  (5 tables)  │                 │
+                            │                        │  1,315 rows  │                 │
+                            │                        └──────────────┘                 │
+                            └─────────────────────────────────────────────────────────┘
+```
+
+```
+  MCP Tools:
+  ┌─────────────────┐  ┌──────────────────┐  ┌──────────────────┐
+  │ get_schema_info  │  │ execute_sql_query │  │ analyze_blob_data│
+  │                  │  │                  │  │                  │
+  │ Discover tables  │  │ Run read-only    │  │ Extract PDF/BLOB │
+  │ & columns        │  │ SELECT queries   │  │ from VARBINARY   │
+  └─────────────────┘  └──────────────────┘  └──────────────────┘
 ```
 
 The agent is fully autonomous — no hardcoded queries or predefined dashboards. Claude Sonnet 4 decides which tools to call, discovers the schema dynamically, generates SQL, and synthesizes results.
@@ -49,14 +78,6 @@ The agent is fully autonomous — no hardcoded queries or predefined dashboards.
 | Lambda Proxy | Cross-region bridge | AI region |
 | Lambda MCP Server | 3 database tools | Data region |
 | RDS MSSQL | Banking database (5 tables) | Data region |
-
-## MCP Tools
-
-| Tool | Description |
-|------|-------------|
-| `get_schema_info` | Returns table/column metadata from INFORMATION_SCHEMA |
-| `execute_sql_query` | Executes read-only SELECT queries (write ops blocked) |
-| `analyze_blob_data` | Extracts VARBINARY content, detects type, returns preview |
 
 ## Database
 

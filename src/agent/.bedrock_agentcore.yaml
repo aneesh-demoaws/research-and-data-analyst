@@ -1,0 +1,29 @@
+# AgentCore Runtime Configuration (Template)
+# Run `agentcore configure` to generate your own config with actual values.
+#
+# Key settings to customize:
+#   - aws.region: Your AI region (where AgentCore is available)
+#   - aws.account: Your AWS account ID
+#   - aws.execution_role: IAM role for the runtime
+#   - protocol_configuration.server_protocol: HTTP (required for this agent pattern)
+#   - network_configuration.network_mode: PUBLIC (agent needs internet for Gateway calls)
+
+default_agent: neobank_analyst
+agents:
+  neobank_analyst:
+    name: neobank_analyst
+    language: python
+    entrypoint: agent.py
+    deployment_type: container
+    platform: linux/arm64
+    aws:
+      region: eu-west-1                    # AI region
+      account: "YOUR_ACCOUNT_ID"
+      execution_role: ""                   # Created by `agentcore configure`
+      ecr_repository: ""                   # Created by `agentcore configure`
+      network_configuration:
+        network_mode: PUBLIC
+      protocol_configuration:
+        server_protocol: HTTP              # Required — agent uses BaseHTTPRequestHandler
+      observability:
+        enabled: true

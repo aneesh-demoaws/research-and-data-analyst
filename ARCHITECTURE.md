@@ -7,16 +7,73 @@ This solution implements an **Agentic AI** pattern where an LLM (Claude Sonnet 4
 ## End-to-End Flow
 
 ```
-1. User asks: "Top 5 customers by exposure?"
-2. Streamlit → AgentCore Runtime (invoke via boto3)
-3. Strands Agent receives prompt
-4. Claude Sonnet 4 reasons: "I need to check the schema first"
-5. Agent calls get_schema_info → Gateway → Proxy → Lambda → MSSQL
-6. Claude sees columns, generates: SELECT TOP 5 full_name, total_exposure_usd FROM customers ORDER BY total_exposure_usd DESC
-7. Agent calls execute_sql_query → Gateway → Proxy → Lambda → MSSQL
-8. Results return through the chain
-9. Claude formats the response with analysis
-10. Response streams back to Streamlit UI
+  User: "Top 5 customers by exposure?"
+    │
+    ▼
+  ┌──────────────────────────────────────────────────────────────────────────┐
+  │ STEP 1: Streamlit sends prompt to AgentCore Runtime via boto3           │
+  │                                                                          │
+  │ STEP 2: Strands Agent + Claude Sonnet 4 reasons:                        │
+  │         "I need to check the schema first"                               │
+  │                                                                          │
+  │ STEP 3: Agent calls get_schema_info                                      │
+  │         → MCP Gateway → Lambda Proxy → Lambda MCP Server → MSSQL        │
+  │         ← returns table/column metadata                                  │
+  │                                                                          │
+  │ STEP 4: Claude generates SQL:                                            │
+  │         SELECT TOP 5 full_name, total_exposure_usd                       │
+  │         FROM customers ORDER BY total_exposure_usd DESC                  │
+  │                                                                          │
+  │ STEP 5: Agent calls execute_sql_query                                    │
+  │         → MCP Gateway → Lambda Proxy → Lambda MCP Server → MSSQL        │
+  │         ← returns 5 rows of results                                      │
+  │                                                                          │
+  │ STEP 6: Claude formats response with analysis                            │
+  └──────────────────────────────────────────────────────────────────────────┘
+    │
+    ▼
+  User sees: formatted answer + execution trace + SQL + timing
+```
+
+## System Architecture
+
+```
+                            ┌─────────────────────────────────────────────────────────┐
+                            │              AI Region (eu-west-1)                       │
+                            │                                                         │
+  ┌──────────┐   invoke     │  ┌──────────────────┐    prompt    ┌─────────────────┐  │
+  │          │─────────────►│  │  AgentCore        │────────────►│  Claude          │  │
+  │ Streamlit│   (boto3)    │  │  Runtime          │◄────────────│  Sonnet 4        │  │
+  │ Frontend │              │  │  (microVM)        │   response  │  (Bedrock)       │  │
+  │ (EC2)    │◄─────────────│  │                   │             └─────────────────┘  │
+  └──────────┘   JSON       │  │  ┌─────────────┐ │                                   │
+  me-south-1                │  │  │ AgentCore   │ │  tool calls                       │
+                            │  │  │ Memory      │ │─────────┐                         │
+                            │  │  │ (STM + LTM) │ │         ▼                         │
+                            │  │  └─────────────┘ │  ┌──────────────┐                 │
+                            │  └──────────────────┘  │ MCP Gateway  │                 │
+                            │                        │ (IAM + SigV4)│                 │
+                            │                        └──────┬───────┘                 │
+                            │                               │                         │
+                            │                        ┌──────▼───────┐                 │
+                            │                        │ Lambda Proxy │                 │
+                            │                        │ (forwarder)  │                 │
+                            │                        └──────┬───────┘                 │
+                            └───────────────────────────────┼─────────────────────────┘
+                                                            │ cross-region invoke
+                            ┌───────────────────────────────┼─────────────────────────┐
+                            │  Data Region (me-south-1)     │                         │
+                            │                        ┌──────▼───────────┐             │
+                            │                        │ Lambda MCP Server│             │
+                            │                        │ (3 tools)        │             │
+                            │                        └──────┬───────────┘             │
+                            │                               │ VPC private subnet      │
+                            │                        ┌──────▼───────┐                 │
+                            │                        │  RDS MSSQL   │                 │
+                            │                        │  (5 tables)  │                 │
+                            │                        │  1,315 rows  │                 │
+                            │                        └──────────────┘                 │
+                            └─────────────────────────────────────────────────────────┘
 ```
 
 ## Component Details
@@ -53,13 +110,40 @@ This solution implements an **Agentic AI** pattern where an LLM (Claude Sonnet 4
 ### Frontend (Streamlit)
 
 - Chat interface with session management
-- Sidebar with example queries
-- **Execution Details expander** showing:
-  - Tool calls with generated SQL (syntax highlighted)
-  - Query results as dataframes
-  - Timing breakdown and data flow diagram
+- 5 tabs: AI Analyst, Architecture, Database, FAQs, Memory
+- Sidebar with RM selection and example queries
+- Execution Details expander showing tool calls, SQL, results, and timing
 
 ## Security Architecture
+
+```
+  Internet
+      │
+      ▼ (restricted to specific IP)
+  ┌─────────────────────────────────────────────────────────────┐
+  │ Public Subnet                                                │
+  │   ┌──────────────────────────────────────────────────────┐  │
+  │   │ EC2 (Streamlit)                                       │  │
+  │   │ SG: port 8501 from allowed IP only                    │  │
+  │   │ IAM Instance Profile → invoke AgentCore Runtime       │  │
+  │   └──────────────────────────────────────────────────────┘  │
+  └─────────────────────────────────────────────────────────────┘
+      │ (no direct DB access)
+  ┌─────────────────────────────────────────────────────────────┐
+  │ Private Subnets                                              │
+  │   ┌────────────────────┐    ┌─────────────────────────────┐ │
+  │   │ Lambda MCP Server  │    │ VPC Endpoint                │ │
+  │   │ SG: outbound only  │    │ (Secrets Manager)           │ │
+  │   └────────┬───────────┘    │ No internet transit         │ │
+  │            │                └─────────────────────────────┘ │
+  │   ┌────────▼───────────┐                                    │
+  │   │ RDS MSSQL          │                                    │
+  │   │ SG: 1433 from      │                                    │
+  │   │     Lambda SG only │                                    │
+  │   │ KMS encrypted      │                                    │
+  │   └────────────────────┘                                    │
+  └─────────────────────────────────────────────────────────────┘
+```
 
 | Layer | Implementation |
 |-------|---------------|
@@ -76,36 +160,44 @@ This solution implements an **Agentic AI** pattern where an LLM (Claude Sonnet 4
 
 ## Cross-Region Design
 
-```
-Data Region (me-south-1)          AI Region (eu-west-1)
-┌─────────────────────┐          ┌─────────────────────┐
-│ RDS MSSQL           │◄────────│ Lambda Proxy        │
-│ Lambda MCP Server   │          │ AgentCore Gateway   │
-│ Secrets Manager     │          │ AgentCore Runtime   │
-│ Streamlit Frontend  │          │ Bedrock (Claude)    │
-└─────────────────────┘          └─────────────────────┘
-```
-
 **Why two regions?**
-- Data sovereignty: banking data stays in the data region
+- Data sovereignty: banking data stays in Bahrain (me-south-1)
 - Service availability: Bedrock AgentCore only available in select regions
 - The proxy bridge adds minimal overhead (~230ms per tool call)
 
+**What crosses the boundary?**
+- Only JSON payloads (tool inputs/outputs) cross regions
+- Raw VARBINARY blobs are decoded in me-south-1 — only text previews cross
+- No customer PII leaves the data region in raw form
+
 ## Performance Profile
 
-| Component | Latency |
-|-----------|---------|
-| LLM Reasoning (Claude Sonnet 4) | 3-8s (85-90% of total) |
-| Gateway → Proxy → Lambda → RDS | 350-400ms (5-8%) |
-| Response formatting | 1-2s (10-15%) |
-| **Total end-to-end** | **5-15s** |
+| Component | Latency | % of Total |
+|-----------|---------|------------|
+| LLM Reasoning (Claude Sonnet 4) | 3-8s | 85-90% |
+| Gateway → Proxy → Lambda → RDS | 350-400ms | 5-8% |
+| Response formatting | 1-2s | 10-15% |
+| **Total end-to-end** | **5-15s** | **100%** |
 
 ## BLOB Data Handling
 
 This is a key differentiator vs BI tools (which skip VARBINARY columns during import):
 
-1. Agent calls `analyze_blob_data(table, blob_column, row_id)`
-2. Lambda reads raw bytes from MSSQL
-3. Detects content type from magic bytes (`%PDF`, `PK` for Office docs)
-4. Extracts readable text content
-5. Returns preview (up to 2000 chars) for the agent to analyze
+```
+  Agent: "Analyze the GCC Oil & Gas report"
+    │
+    ▼
+  analyze_blob_data(table="research_reports", blob_column="report_content", row_id=1)
+    │
+    ▼
+  Lambda reads raw bytes from MSSQL
+    │
+    ▼
+  Detects content type from magic bytes (%PDF → PDF, PK → Office doc)
+    │
+    ▼
+  Extracts readable text content (up to 2000 chars)
+    │
+    ▼
+  Returns preview → Claude analyzes and summarizes
+```

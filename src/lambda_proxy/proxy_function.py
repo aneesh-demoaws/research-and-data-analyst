@@ -1,11 +1,12 @@
-"""Proxy Lambda in eu-west-1 — forwards MCP tool calls to neobank-mcp-server in me-south-1.
+"""Proxy Lambda in eu-west-1 — forwards MCP tool calls to the MCP server in me-south-1.
 Preserves the Gateway context (client_context) which contains the tool name."""
 import json
+import os
 import base64
 import boto3
 
-lambda_client = boto3.client("lambda", region_name="me-south-1")
-TARGET_FUNCTION = "bankabc-mcp-server"
+lambda_client = boto3.client("lambda", region_name=os.environ.get("DATA_REGION", "me-south-1"))
+TARGET_FUNCTION = os.environ.get("MCP_SERVER_FUNCTION", "neobank-mcp-server")
 
 
 def handler(event, context):

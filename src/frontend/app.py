@@ -9,9 +9,9 @@ import streamlit as st
 
 st.set_page_config(page_title="NeoBank AI Analyst", page_icon="🏦", layout="wide")
 
-AGENT_ARN = "arn:aws:bedrock-agentcore:eu-west-1:519124228967:runtime/bankabc_analyst-9leseM818c"
+AGENT_ARN = os.environ.get("AGENT_ARN", "")
 REGION = "eu-west-1"
-REPORT_BUCKET = "bankabc-mvp-519124228967-me-south-1"
+REPORT_BUCKET = os.environ.get("REPORT_BUCKET", "")
 REPORTS = {
     "GCC Oil & Gas Sector Review 2025": "reports/01_GCC_Oil_Gas_Sector_Review_2025.pdf",
     "Credit Risk — Gulf Petrochemical": "reports/02_Credit_Risk_Gulf_Petrochemical.pdf",
@@ -678,7 +678,7 @@ def render_memory():
         try:
             mem_client = boto3.client("bedrock-agentcore", region_name=REGION)
             ctrl_client = boto3.client("bedrock-agentcore-control", region_name=REGION)
-            MEMORY_ID = "NeoBank_Analyst_Memory-QfXapPAih6"
+            MEMORY_ID = os.environ.get("MEMORY_ID", "")
             ACTOR = "demo_user"
 
             # Memory config

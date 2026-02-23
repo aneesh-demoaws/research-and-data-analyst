@@ -13,12 +13,9 @@ from mcp.client.streamable_http import streamablehttp_client
 from bedrock_agentcore.memory.integrations.strands.config import AgentCoreMemoryConfig, RetrievalConfig
 from bedrock_agentcore.memory.integrations.strands.session_manager import AgentCoreMemorySessionManager
 
-GATEWAY_URL = os.environ.get(
-    "GATEWAY_URL",
-    "https://bankabc-mcp-gateway-5xe20qrqmo.gateway.bedrock-agentcore.eu-west-1.amazonaws.com/mcp",
-)
-MEMORY_ID = os.environ.get("MEMORY_ID", "NeoBank_Analyst_Memory-QfXapPAih6")
-AI_REGION = "eu-west-1"
+GATEWAY_URL = os.environ.get("GATEWAY_URL", "")
+MEMORY_ID = os.environ.get("MEMORY_ID", "")
+AI_REGION = os.environ.get("AI_REGION", "eu-west-1")
 
 SYSTEM_PROMPT = """You are NeoBank's Enterprise AI Research & Data Analyst Agent.
 You query the NeoBank MSSQL database with GCC banking data.
